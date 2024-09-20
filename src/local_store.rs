@@ -1,11 +1,71 @@
 use crate::spotify_api::{AppAuthData, UserAuthData};
 
-use std::{fs, fs::OpenOptions};
+use anyhow::Result;
+use bitwarden::secrets_manager::secrets::SecretGetRequest;
+use serde::Deserialize;
 use std::io::Write;
+use std::{fs, fs::OpenOptions};
+use tracing::info;
 use tracing::{error, warn};
+use uuid::Uuid;
 
+use bitwarden::{
+    auth::login::AccessTokenLoginRequest, secrets_manager::secrets::SecretIdentifiersRequest,
+    secrets_manager::secrets::SecretResponse, secrets_manager::ClientSecretsExt, Client,
+};
+
+const BITWARDEN_CONFIG: &str = "bitwarden_config.json";
 const APP_AUTH_DATA: &str = "app_auth.json";
 const LOCAL_USER_AUTH_DATA: &str = "user_auth.json";
+
+#[derive(Deserialize)]
+pub struct BitwardenConfig {
+    pub access_token: String,
+    org_id: Uuid,
+}
+
+pub fn load_bitwarden_data() -> Result<BitwardenConfig> {
+    let bitwarden_data = fs::read_to_string(BITWARDEN_CONFIG)?;
+    let config: BitwardenConfig = serde_json::from_str(&bitwarden_data)?;
+    Ok(config)
+}
+
+impl BitwardenConfig {
+    pub fn list_secrets(&self) {
+        let client = Client::new(None);
+        let token = AccessTokenLoginRequest {
+            access_token: self.access_token.clone(),
+            state_file: None,
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let res = rt
+            .block_on(async { client.auth().login_access_token(&token).await })
+            .unwrap();
+        info!("BW Auth Result {:?}", res);
+
+        let org_id = SecretIdentifiersRequest {
+            organization_id: self.org_id.clone(),
+        };
+        let res = rt
+            .block_on(async { client.secrets().list(&org_id).await })
+            .unwrap();
+        info!("List Secrets: {:?}", res);
+        let secret_md = res.data.get(0).unwrap();
+
+        let get_secret = SecretGetRequest { id: secret_md.id };
+        let res: SecretResponse = rt
+            .block_on(async { client.secrets().get(&get_secret).await })
+            .unwrap();
+
+        info!(
+            "Shhhhh: key: {} value: {} Note: {}",
+            res.key, res.value, res.note
+        );
+    }
+}
 
 pub fn load_app_auth_data() -> Option<AppAuthData> {
     match fs::exists(APP_AUTH_DATA) {
@@ -66,8 +126,8 @@ pub fn store_user_auth_data(data: &UserAuthData) {
 
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
     use super::*;
+    use std::time::SystemTime;
 
     fn check_files() {
         match fs::exists(LOCAL_USER_AUTH_DATA) {
@@ -91,7 +151,7 @@ mod tests {
         };
         store_user_auth_data(&user_auth);
         assert!(fs::exists(LOCAL_USER_AUTH_DATA).unwrap());
-        fs::remove_file(LOCAL_USER_AUTH_DATA);
+        let _ = fs::remove_file(LOCAL_USER_AUTH_DATA);
         assert!(!fs::exists(LOCAL_USER_AUTH_DATA).unwrap());
     }
 
@@ -119,7 +179,7 @@ mod tests {
         store_user_auth_data(&user_auth);
         assert!(fs::exists(LOCAL_USER_AUTH_DATA).unwrap());
         // TODO: assert file contents changed
-        fs::remove_file(LOCAL_USER_AUTH_DATA);
+        let _ = fs::remove_file(LOCAL_USER_AUTH_DATA);
         assert!(!fs::exists(LOCAL_USER_AUTH_DATA).unwrap());
     }
 }
