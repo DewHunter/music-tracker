@@ -1,17 +1,17 @@
-use crate::local_store::{load_app_auth_data, load_user_auth_data, store_user_auth_data};
+use crate::local_store::CredStorage;
 use crate::pkce;
 
-use core::result::Result;
-use std::time::SystemTime;
 use std::io;
+use std::time::SystemTime;
 
+use anyhow::{bail, Result};
 use reqwest::blocking::{Client, Response};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 use url::Url;
 
-const SCOPE: &str = "user-read-playback-state user-read-currently-playing playlist-read-private user-read-playback-position user-top-read user-read-recently-played user-library-read";
-const SPOTIFY_AUTH_URL:  &str = "https://accounts.spotify.com/authorize";
+pub const SCOPE: &str = "user-read-playback-state user-read-currently-playing playlist-read-private user-read-playback-position user-top-read user-read-recently-played user-library-read";
+const SPOTIFY_AUTH_URL: &str = "https://accounts.spotify.com/authorize";
 const SPOTIFY_TOKENS_URL: &str = "https://accounts.spotify.com/api/token";
 const SPOTIFY_API_URL: &str = "https://api.spotify.com/v1/me/player";
 const CUR_PLAYING_API_PATH: &str = "/currently-playing";
@@ -22,8 +22,8 @@ const CONTENT_TYPE_URL_ENCODED: &str = "application/x-www-form-urlencoded";
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AppAuthData {
-    client_id: String,
-    client_secret: Option<String>,
+    pub client_id: String,
+    pub client_secret: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -39,56 +39,22 @@ pub struct UserAuthData {
 }
 
 pub struct SpotifyClient {
-    app_auth: Option<AppAuthData>,
+    user_id: String,
+    app_client_id: Option<String>,
     user_auth: Option<UserAuthData>,
+    creds_storage: CredStorage,
     http_client: Client,
 }
 
-impl SpotifyClient {
-    pub fn new() -> SpotifyClient {
-        SpotifyClient {
-            app_auth: None,
-            user_auth: None,
-            http_client: Client::new(),
-        }
-    }
-
-    fn creds_are_loaded(&self) -> bool {
-        self.app_auth.is_some() && self.user_auth.is_some()
-    }
-
-    fn access_token(&self) -> String {
-        let auth = self.user_auth.as_ref().unwrap();
-        auth.access_token.clone()
-    }
-
-    fn update_user_auth(&mut self, response: Response) -> Result<(), &str> {
-        let mut user_auth_data: UserAuthData = match response.json() {
-            Err(_) => {
-                return Err("Could not parse response json into a UserAuthData struct");
-            },
-            Ok(auth) => auth,
-        };
-        user_auth_data.last_refresh = Some(SystemTime::now());
-        store_user_auth_data(&user_auth_data);
-        self.user_auth = Some(user_auth_data);
-
-        Ok(())
-    }
-
-    /// Checks if access token has expired or is about to expire within 5 seconds.
-    /// If so, an attempt is made to refresh the token and store the new values.
-    fn refresh_access_token(&mut self) -> Result<(), &str> {
-        let app = self.app_auth.as_ref().ok_or("Missing app_auth data")?;
-        let auth = self.user_auth.as_ref().ok_or("Missing user_auth data")?;
-
-        if let Some(last_refresh) = auth.last_refresh {
+impl UserAuthData {
+    pub fn token_needs_refresh(&self) -> bool {
+        if let Some(last_refresh) = self.last_refresh {
             match last_refresh.elapsed() {
                 Ok(elapsed) => {
                     // Adding a 5 second buffer
-                    if elapsed.as_secs() < (auth.expires_in as u64 - 5) {
+                    if elapsed.as_secs() < (self.expires_in as u64 - 5) {
                         info!("No need to refresh the access token at this time");
-                        return Ok(());
+                        return false;
                     }
                 }
                 Err(e) => {
@@ -96,30 +62,81 @@ impl SpotifyClient {
                 }
             }
         }
+
+        true
+    }
+}
+
+impl SpotifyClient {
+    pub fn new(user_id: String) -> Result<SpotifyClient> {
+        let creds_storage = CredStorage::new()?;
+        Ok(SpotifyClient {
+            user_id,
+            app_client_id: None,
+            user_auth: None,
+            creds_storage,
+            http_client: Client::new(),
+        })
+    }
+
+    fn creds_are_loaded(&self) -> bool {
+        self.app_client_id.is_some() && self.user_auth.is_some()
+    }
+
+    fn access_token(&self) -> String {
+        let auth = self.user_auth.as_ref().unwrap();
+        auth.access_token.clone()
+    }
+
+    fn update_user_auth(&mut self, response: Response) -> Result<()> {
+        let mut user_auth_data: UserAuthData = match response.json() {
+            Err(_) => {
+                bail!("Could not parse response json into a UserAuthData struct");
+            }
+            Ok(auth) => auth,
+        };
+        user_auth_data.last_refresh = Some(SystemTime::now());
+        self.creds_storage.store_user_auth_data(&user_auth_data);
+        self.user_auth = Some(user_auth_data);
+
+        Ok(())
+    }
+
+    /// Checks if access token has expired or is about to expire within 5 seconds.
+    /// If so, an attempt is made to refresh the token and store the new values.
+    ///
+    /// On Error: access token failed to refresh, there was an issue interacting with Spotify's API
+    fn refresh_access_token(&mut self) -> Result<()> {
+        let app_client_id = self
+            .app_client_id
+            .clone()
+            .expect("Missing app_client_id data");
+        let auth = self.user_auth.as_ref().expect("Missing user_auth data");
+
+        if !auth.token_needs_refresh() {
+            return Ok(());
+        }
         info!("Refreshing API access token");
 
-        let response = self.http_client.post(SPOTIFY_TOKENS_URL)
+        let response = self
+            .http_client
+            .post(SPOTIFY_TOKENS_URL)
             .header(CONTENT_TYPE, CONTENT_TYPE_URL_ENCODED)
             .form(&[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", &auth.refresh_token),
-                ("client_id", &app.client_id),
+                ("client_id", &app_client_id),
             ])
             .send();
 
         let response = match response {
             Ok(resp) => resp,
-            Err(_) => return Err("Reqwest response is error"),
+            Err(e) => {
+                bail!("Problem interacting with Spotify API trying to refresh token: {e}")
+            }
         };
 
-        match self.update_user_auth(response) {
-            Err(e) => {
-                error!("There was a problem {e}");
-            }
-            _ => {}
-        }
-
-        Ok(())
+        self.update_user_auth(response)
     }
 
     fn read_spotify_code() -> Option<String> {
@@ -135,24 +152,18 @@ impl SpotifyClient {
         get_code_from_query_pairs(parsed_url.unwrap())
     }
 
-    pub fn setup_creds(&mut self) {
-        let app_auth = load_app_auth_data();
-        if app_auth.is_none() {
-            panic!("Critical app auth data cannot be loaded");
-        } else {
-            self.app_auth = app_auth;
-        }
-        self.user_auth = load_user_auth_data();
+    pub fn setup_creds(&mut self) -> Result<()> {
+        let client_id = self.creds_storage.load_app_auth_data()?.client_id;
+        self.app_client_id = Some(client_id.clone());
+        self.user_auth = self.creds_storage.load_user_auth_data(&self.user_id);
+
         if self.creds_are_loaded() {
-            match self.refresh_access_token() {
-                Err(e) => {
-                    error!("Problem while refreshing access tokens: {e}, please delete user_auth.json and get brand-new creds");
-                }
-                _ => {}
-            }
-            debug!("Spotify API creds all-good");
-            return;
+            let _ = self.refresh_access_token()?;
+            info!("Spotify API creds are ready to go");
+            return Ok(());
         }
+
+        warn!("We need to generate auth tokens from Spotify, starting now");
 
         // Step 1: Auth with Spotify
         let code_verifier = pkce::generate_code_verifier();
@@ -161,52 +172,45 @@ impl SpotifyClient {
             SPOTIFY_AUTH_URL,
             &[
                 ("response_type", "code"),
-                ("client_id", &self.app_auth.clone().unwrap().client_id),
+                ("client_id", &client_id),
                 ("scope", SCOPE),
                 ("code_challenge_method", CHALLENGE_METHOD),
                 ("code_challenge", &code_challenge),
-                ("redirect_uri", REDIRECT_URI)
-            ]
-        ).unwrap();
+                ("redirect_uri", REDIRECT_URI),
+            ],
+        )?;
         info!("Paste this into your browser to auth this app: \n{}", url);
 
         // Step 2: User must input code/state into this CLI
         let spotify_auth_code = match Self::read_spotify_code() {
-            None => return,
+            None => bail!("Could not get user input"),
             Some(c) => c,
         };
         info!("Parsed auth code: {}", spotify_auth_code);
 
         // Step 3: Ask spotify for an access token using the code
-        let response = self.http_client.post(SPOTIFY_TOKENS_URL)
+        let response = self
+            .http_client
+            .post(SPOTIFY_TOKENS_URL)
             .header(CONTENT_TYPE, CONTENT_TYPE_URL_ENCODED)
             .form(&[
                 ("grant_type", "authorization_code"),
                 ("code", &spotify_auth_code),
-                ("client_id", &self.app_auth.clone().unwrap().client_id),
-                ("code_verifier", &String::from_utf8(code_verifier).unwrap()),
-                ("redirect_uri", REDIRECT_URI)
+                ("client_id", &client_id),
+                ("code_verifier", &String::from_utf8(code_verifier)?),
+                ("redirect_uri", REDIRECT_URI),
             ])
             .send();
 
         debug!("Full Response from Spotify: {:?}", response);
 
-        if response.is_err() {
-            error!("There was an error while getting spotify's auth token");
-            return;
-        } else if let Ok(resp) = response {
-            match self.update_user_auth(resp) {
-                Err(e) => {
-                    error!("There was a problem {e}");
-                }
-                _ => {}
-            }
-        }
+        let resp = response?;
+        self.update_user_auth(resp)
     }
 
-    pub fn get_currently_playing_track(&self) -> Result<String, &str> {
+    pub fn get_currently_playing_track(&self) -> Result<String> {
         if !self.creds_are_loaded() {
-            return Err("Creds are misconfigured, cannot execute API");
+            bail!("Creds are misconfigured, cannot execute API");
         }
         let access_token = self.access_token();
         let api_url = format!("{SPOTIFY_API_URL}{CUR_PLAYING_API_PATH}");
@@ -214,11 +218,11 @@ impl SpotifyClient {
         debug!("Full request to Spotify: {:?}", request);
         let response = request.send();
         debug!("Full Response from Spotify: {:?}", response);
-        if response.is_err() {
-            return Err("There was an error while getting spotify's auth token");
+        if let Err(e) = response {
+            bail!("Problem calling Spotify API: {e}");
         }
-        let payload= response.unwrap();
-        let body = payload.text().unwrap();
+        let payload = response?;
+        let body = payload.text()?;
         Ok(body)
     }
 }
@@ -255,7 +259,8 @@ mod tests {
 
     #[test]
     fn test_system_time_parsing() {
-        let string = String::from("{\"secs_since_epoch\":1726602033,\"nanos_since_epoch\":365022800}");
+        let string =
+            String::from("{\"secs_since_epoch\":1726602033,\"nanos_since_epoch\":365022800}");
         let systime: serde_json::error::Result<SystemTime> = serde_json::from_str(&string);
         assert!(systime.is_ok());
     }
