@@ -10,9 +10,13 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use bitwarden::{
-    auth::login::AccessTokenLoginRequest, secrets_manager::secrets::SecretGetRequest,
-    secrets_manager::secrets::SecretIdentifiersRequest, secrets_manager::secrets::SecretResponse,
+    auth::login::AccessTokenLoginRequest,
     secrets_manager::ClientSecretsExt, Client,
+};
+use bitwarden::secrets_manager::secrets::{
+    SecretGetRequest, SecretIdentifiersRequest,
+    SecretResponse, SecretCreateRequest,
+    SecretPutRequest
 };
 
 const BITWARDEN_CONFIG: &str = "bitwarden_config.json";
@@ -27,10 +31,12 @@ const BW_SPOTIFY_REFRESH_KEY: &str = "spotify_refresh_token";
 struct BitwardenCreds {
     access_token: String,
     org_id: Uuid,
+    project_id: Uuid
 }
 
 pub struct CredStorage {
     org_id: SecretIdentifiersRequest,
+    project_id: Uuid,
     rt: Runtime,
     bw_client: Client,
 }
@@ -46,6 +52,7 @@ impl CredStorage {
         let creds = load_bitwarden_data()?;
         let access_token = creds.access_token;
         let org_id = creds.org_id;
+        let project_id = creds.project_id;
 
         let bw_client = Client::new(None);
         let token = AccessTokenLoginRequest {
@@ -62,6 +69,7 @@ impl CredStorage {
 
         Ok(CredStorage {
             org_id,
+            project_id,
             rt,
             bw_client,
         })
@@ -96,6 +104,44 @@ impl CredStorage {
         debug!("Get Secret: {:?}", res);
 
         Ok(res.value)
+    }
+
+    fn put_secret(&self, key: &str, value: &str) -> Result<()> {
+        let secrets_md = self.list_secrets()?;
+        let id = match secrets_md.get(key) {
+            Some(id) => id,
+            None => {
+                warn!("Secret key <{key}> does not exist in bitwarden, we will try to create it");
+                let create_request = SecretCreateRequest {
+                    organization_id: self.org_id.organization_id,
+                    key: key.to_string(),
+                    value: value.to_string(),
+                    note: String::new(),
+                    project_ids: Some(vec![self.project_id]),
+                };
+                let res: SecretResponse = self
+                    .rt
+                    .block_on(async { self.bw_client.secrets().create(&create_request).await })?;
+                debug!("Create Secret Response: {:?}", res);
+                info!("Successfully created secret <{key}> in bitwarden");
+                return Ok(());
+            },
+        };
+
+        let put_request = SecretPutRequest {
+            id: *id,
+            organization_id: self.org_id.organization_id,
+            key: key.to_string(),
+            value: value.to_string(),
+            note: String::new(),
+            project_ids: Some(vec![self.project_id]),
+        };
+        let res: SecretResponse = self
+            .rt
+            .block_on(async { self.bw_client.secrets().update(&put_request).await })?;
+        debug!("Update Secret Response: {:?}", res);
+        info!("Successfully updated secret <{key}>");
+        Ok(())
     }
 
     /// Loads an AppAuthData struct.
@@ -178,12 +224,18 @@ impl CredStorage {
         })
     }
 
-    pub fn store_user_auth_data(&self, user_auth: &UserAuthData) {
+    pub fn store_user_auth_data(&self, user_auth: &UserAuthData, user_id: &str) {
         match store_json_data(LOCAL_USER_AUTH_DATA, user_auth) {
             Err(_) => warn!("Failed to write User auth data file"),
             _ => {}
         }
-        // TODO: Store access and refresh tokens in bitwarden
+        info!("Storing UserAuthData into bitwarden");
+        if let Err(e) = self.put_secret(&format!("{BW_SPOTIFY_REFRESH_KEY}_{user_id}"), &user_auth.refresh_token) {
+            error!("Failed to write refresh token into bitwarden {e}");
+        }
+        if let Err(e) = self.put_secret(&format!("{BW_SPOTIFY_TOKEN_KEY}_{user_id}"), &user_auth.access_token) {
+            error!("Failed to write refresh token into bitwarden: {e}");
+        }
     }
 }
 

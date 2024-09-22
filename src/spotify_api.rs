@@ -96,7 +96,7 @@ impl SpotifyClient {
             Ok(auth) => auth,
         };
         user_auth_data.last_refresh = Some(SystemTime::now());
-        self.creds_storage.store_user_auth_data(&user_auth_data);
+        self.creds_storage.store_user_auth_data(&user_auth_data, &self.user_id);
         self.user_auth = Some(user_auth_data);
 
         Ok(())
