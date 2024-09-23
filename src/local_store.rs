@@ -1,23 +1,20 @@
 use crate::spotify_api::{self, AppAuthData, UserAuthData};
 
 use anyhow::{bail, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
+use std::time::SystemTime;
 use std::{fs, fs::OpenOptions};
 use tokio::runtime::Runtime;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use bitwarden::{
-    auth::login::AccessTokenLoginRequest,
-    secrets_manager::ClientSecretsExt, Client,
-};
 use bitwarden::secrets_manager::secrets::{
-    SecretGetRequest, SecretIdentifiersRequest,
-    SecretResponse, SecretCreateRequest,
-    SecretPutRequest
+    SecretCreateRequest, SecretGetRequest, SecretIdentifiersRequest, SecretPutRequest,
+    SecretResponse,
 };
+use bitwarden::{auth::login::AccessTokenLoginRequest, secrets_manager::ClientSecretsExt, Client};
 
 const BITWARDEN_CONFIG: &str = "bitwarden_config.json";
 const APP_AUTH_DATA: &str = "app_auth.json";
@@ -31,7 +28,13 @@ const BW_SPOTIFY_REFRESH_KEY: &str = "spotify_refresh_token";
 struct BitwardenCreds {
     access_token: String,
     org_id: Uuid,
-    project_id: Uuid
+    project_id: Uuid,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct RefreshNote {
+    pub expires_in: i64,
+    pub last_refresh: Option<SystemTime>,
 }
 
 pub struct CredStorage {
@@ -90,7 +93,9 @@ impl CredStorage {
         Ok(secrets)
     }
 
-    fn get_secret(&self, key: &str) -> Result<String> {
+    /// Gien the name of a secret, also named a key, we look for it in
+    /// secrets manager and return a tuple of the secret value and note.
+    fn get_secret(&self, key: &str) -> Result<(String, String)> {
         let secrets_md = self.list_secrets()?;
         let id = match secrets_md.get(key) {
             Some(id) => id,
@@ -103,10 +108,10 @@ impl CredStorage {
             .block_on(async { self.bw_client.secrets().get(&get_secret).await })?;
         debug!("Get Secret: {:?}", res);
 
-        Ok(res.value)
+        Ok((res.value, res.note))
     }
 
-    fn put_secret(&self, key: &str, value: &str) -> Result<()> {
+    fn put_secret(&self, key: &str, value: &str, note: Option<String>) -> Result<()> {
         let secrets_md = self.list_secrets()?;
         let id = match secrets_md.get(key) {
             Some(id) => id,
@@ -116,7 +121,7 @@ impl CredStorage {
                     organization_id: self.org_id.organization_id,
                     key: key.to_string(),
                     value: value.to_string(),
-                    note: String::new(),
+                    note: note.unwrap_or(String::new()),
                     project_ids: Some(vec![self.project_id]),
                 };
                 let res: SecretResponse = self
@@ -125,7 +130,7 @@ impl CredStorage {
                 debug!("Create Secret Response: {:?}", res);
                 info!("Successfully created secret <{key}> in bitwarden");
                 return Ok(());
-            },
+            }
         };
 
         let put_request = SecretPutRequest {
@@ -133,7 +138,7 @@ impl CredStorage {
             organization_id: self.org_id.organization_id,
             key: key.to_string(),
             value: value.to_string(),
-            note: String::new(),
+            note: note.unwrap_or(String::new()),
             project_ids: Some(vec![self.project_id]),
         };
         let res: SecretResponse = self
@@ -160,7 +165,7 @@ impl CredStorage {
         }
         info!("Did not find {APP_AUTH_DATA} with usable data, fetching from bitwarden");
 
-        let app_id = self.get_secret(BW_SPOTIFY_APP_CLIENTID_KEY)?;
+        let (app_id, _) = self.get_secret(BW_SPOTIFY_APP_CLIENTID_KEY)?;
         let app_data = AppAuthData {
             client_id: app_id,
             client_secret: None,
@@ -192,55 +197,75 @@ impl CredStorage {
 
         let refresh = self.get_secret(&format!("{BW_SPOTIFY_REFRESH_KEY}_{user_id}"));
         debug!("Response from fetching refresh key: {refresh:?}");
-        // If we find data locally and remotely, and the refresh tokens match
-        // then we can assume all the data is the same, and return the local value
-        // If we find both and the values don't match, we will favor the ones remotely
-        // they are more likely to be current.
-        if let (Ok(bw_tok), Some(local)) = (refresh.as_ref(), local_data.as_ref()) {
-            if *bw_tok == local.refresh_token {
-                info!("Found user auth data locally that matches secrets manager");
+
+        let (refresh_tok, note) = match refresh {
+            Err(_) => {
                 return local_data;
             }
-            warn!("Found user auth data locally and in bitwarden but they don't match");
-        } else if refresh.is_err() {
-            // If local and remote are missing, this will be None
+            Ok(tuple) => tuple,
+        };
+
+        if local_data
+            .as_ref()
+            .is_some_and(|l| refresh_tok == l.refresh_token)
+        {
+            info!("Found user auth data locally that matches secrets manager");
             return local_data;
         }
+        warn!("Found user auth data locally and in bitwarden but they don't match");
 
-        let refresh = refresh.unwrap();
-        let token = match self.get_secret(&format!("{BW_SPOTIFY_TOKEN_KEY}_{user_id}")) {
+        let (access_tok, _) = match self.get_secret(&format!("{BW_SPOTIFY_TOKEN_KEY}_{user_id}")) {
             Err(e) => {
                 debug!("There was an error fetching spotify access token: {e}");
                 warn!("Did not find access token in bitwarden, but we did find a refresh token");
-                String::new()
+                (String::new(), String::new())
             }
-            Ok(tok) => tok,
+            Ok(tup) => tup,
         };
 
+        let refresh_note = serde_json::from_str(&note).unwrap_or(RefreshNote::default());
+
         Some(UserAuthData {
-            access_token: token,
-            refresh_token: refresh,
+            access_token: access_tok,
+            refresh_token: refresh_tok,
             token_type: "Bearer".to_string(),
             scope: spotify_api::SCOPE.to_string(),
             // We don't know when was the last refresh
-            expires_in: 0,
-            last_refresh: None,
+            expires_in: refresh_note.expires_in,
+            last_refresh: refresh_note.last_refresh,
         })
     }
 
     pub fn store_user_auth_data(&self, user_auth: &UserAuthData, user_id: &str) {
-        match store_json_data(LOCAL_USER_AUTH_DATA, user_auth) {
-            Err(_) => warn!("Failed to write User auth data file"),
-            _ => {}
+        if let Err(e) = store_json_data(LOCAL_USER_AUTH_DATA, user_auth) {
+            warn!("Failed to write User auth data file: {e}");
         }
         info!("Storing UserAuthData into bitwarden");
-        if let Err(e) = self.put_secret(&format!("{BW_SPOTIFY_REFRESH_KEY}_{user_id}"), &user_auth.refresh_token) {
+        if let Err(e) = self.put_secret(
+            &format!("{BW_SPOTIFY_REFRESH_KEY}_{user_id}"),
+            &user_auth.refresh_token,
+            make_refresh_note(user_auth),
+        ) {
             error!("Failed to write refresh token into bitwarden {e}");
         }
-        if let Err(e) = self.put_secret(&format!("{BW_SPOTIFY_TOKEN_KEY}_{user_id}"), &user_auth.access_token) {
+        if let Err(e) = self.put_secret(
+            &format!("{BW_SPOTIFY_TOKEN_KEY}_{user_id}"),
+            &user_auth.access_token,
+            make_refresh_note(user_auth),
+        ) {
             error!("Failed to write refresh token into bitwarden: {e}");
         }
     }
+}
+
+fn make_refresh_note(data: &UserAuthData) -> Option<String> {
+    data.last_refresh.and_then(|ts| {
+        let note = RefreshNote {
+            expires_in: data.expires_in,
+            last_refresh: Some(ts),
+        };
+        serde_json::to_string(&note).ok()
+    })
 }
 
 fn load_json_data<D>(file_name: &str) -> Result<D>

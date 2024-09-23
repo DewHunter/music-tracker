@@ -4,7 +4,7 @@ use tracing::{error, info, Level};
 const USER: &str = "jorge";
 
 fn main() {
-    setup_tracing(Level::DEBUG);
+    setup_tracing(Level::INFO);
     info!("Running the spotify test cli!");
     let mut spotify = SpotifyClient::new(USER.to_string()).unwrap();
     spotify.setup_creds().unwrap();

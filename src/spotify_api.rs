@@ -53,7 +53,6 @@ impl UserAuthData {
                 Ok(elapsed) => {
                     // Adding a 5 second buffer
                     if elapsed.as_secs() < (self.expires_in as u64 - 5) {
-                        info!("No need to refresh the access token at this time");
                         return false;
                     }
                 }
@@ -96,7 +95,8 @@ impl SpotifyClient {
             Ok(auth) => auth,
         };
         user_auth_data.last_refresh = Some(SystemTime::now());
-        self.creds_storage.store_user_auth_data(&user_auth_data, &self.user_id);
+        self.creds_storage
+            .store_user_auth_data(&user_auth_data, &self.user_id);
         self.user_auth = Some(user_auth_data);
 
         Ok(())
