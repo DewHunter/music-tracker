@@ -3,6 +3,7 @@ use tracing::{error, info, Level};
 
 const USER: &str = "jorge";
 
+/// Depends on the "blocking" feature flags
 fn main() {
     setup_tracing(Level::INFO);
     info!("Running the spotify test cli!");
