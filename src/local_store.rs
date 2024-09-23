@@ -155,8 +155,10 @@ impl CredStorage {
     /// write the json data file.
     pub fn load_app_auth_data(&self) -> Result<AppAuthData> {
         if let Ok(data) = load_json_data(APP_AUTH_DATA) {
+            info!("Using AppAuthData found in local json file");
             return Ok(data);
         }
+        info!("Did not find {APP_AUTH_DATA} with usable data, fetching from bitwarden");
 
         let app_id = self.get_secret(BW_SPOTIFY_APP_CLIENTID_KEY)?;
         let app_data = AppAuthData {
@@ -189,6 +191,7 @@ impl CredStorage {
         }
 
         let refresh = self.get_secret(&format!("{BW_SPOTIFY_REFRESH_KEY}_{user_id}"));
+        debug!("Response from fetching refresh key: {refresh:?}");
         // If we find data locally and remotely, and the refresh tokens match
         // then we can assume all the data is the same, and return the local value
         // If we find both and the values don't match, we will favor the ones remotely
@@ -206,7 +209,8 @@ impl CredStorage {
 
         let refresh = refresh.unwrap();
         let token = match self.get_secret(&format!("{BW_SPOTIFY_TOKEN_KEY}_{user_id}")) {
-            Err(_) => {
+            Err(e) => {
+                debug!("There was an error fetching spotify access token: {e}");
                 warn!("Did not find access token in bitwarden, but we did find a refresh token");
                 String::new()
             }

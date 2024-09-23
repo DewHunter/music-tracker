@@ -2,17 +2,21 @@ use base64::Engine;
 use rand::prelude::*;
 
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
-const PKCE_VALID_CHARS: &[u8] = b"~.-_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+const PKCE_VALID_CHARS: &[u8] =
+    b"~.-_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 const MAX_LEN: usize = 128;
 
 pub fn generate_code_verifier() -> Vec<u8> {
     let mut rng = thread_rng();
     let mut code_verifier = Vec::with_capacity(MAX_LEN);
     for _ in 0..MAX_LEN {
-        code_verifier.push(*PKCE_VALID_CHARS.choose(&mut rng)
-            .expect("Error while choosing PKCE valid chars with rand."));
+        code_verifier.push(
+            *PKCE_VALID_CHARS
+                .choose(&mut rng)
+                .expect("Error while choosing PKCE valid chars with rand."),
+        );
     }
 
     code_verifier
@@ -40,8 +44,6 @@ mod tests {
     fn test_code_verifier_gen() {
         let code = generate_code_verifier();
         let encoded = encode_s256(&code);
-        assert_eq!(encoded.len(), 43);
-        let encoded_one_step = gen_s256_code_verifier();
         assert_eq!(encoded.len(), 43);
     }
 
