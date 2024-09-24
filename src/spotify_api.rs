@@ -1,10 +1,10 @@
 use crate::local_store::CredStorage;
 use crate::pkce;
-
-use std::io;
-use std::time::SystemTime;
+use crate::spotify_data::CurrentlyPlayingTrack;
 
 use anyhow::{bail, Result};
+use std::io;
+use std::time::SystemTime;
 
 #[cfg(feature = "blocking")]
 use reqwest::blocking::{Client, Response};
@@ -12,6 +12,7 @@ use reqwest::blocking::{Client, Response};
 #[cfg(not(feature = "blocking"))]
 use reqwest::{Client, Response};
 
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 use url::Url;
@@ -339,7 +340,7 @@ impl SpotifyClient {
     }
 
     #[cfg(feature = "blocking")]
-    pub fn get_currently_playing_track(&self) -> Result<String> {
+    pub fn get_currently_playing_track(&self) -> Result<Option<CurrentlyPlayingTrack>> {
         if !self.creds_are_loaded() {
             bail!("Creds are misconfigured, cannot execute API");
         }
@@ -353,12 +354,20 @@ impl SpotifyClient {
             bail!("Problem calling Spotify API: {e}");
         }
         let payload = response?;
-        let body = payload.text()?;
-        Ok(body)
+        if StatusCode::NO_CONTENT == payload.status() {
+            // Nothing is playing right now
+            return Ok(None);
+        }
+        match payload.json::<CurrentlyPlayingTrack>() {
+            Err(_) => {
+                bail!("Could not parse response into a CurrentlyPlayingTrack");
+            }
+            Ok(data) => return Ok(Some(data)),
+        }
     }
 
     #[cfg(not(feature = "blocking"))]
-    pub async fn get_currently_playing_track(&self) -> Result<String> {
+    pub async fn get_currently_playing_track(&self) -> Result<Option<CurrentlyPlayingTrack>> {
         if !self.creds_are_loaded() {
             bail!("Creds are misconfigured, cannot execute API");
         }
@@ -372,8 +381,16 @@ impl SpotifyClient {
             bail!("Problem calling Spotify API: {e}");
         }
         let payload = response?;
-        let body = payload.text().await?;
-        Ok(body)
+        if StatusCode::NO_CONTENT == payload.status() {
+            // Nothing is playing right now
+            return Ok(None);
+        }
+        match payload.json::<CurrentlyPlayingTrack>().await {
+            Err(_) => {
+                bail!("Could not parse response into a CurrentlyPlayingTrack");
+            }
+            Ok(data) => return Ok(Some(data)),
+        }
     }
 }
 

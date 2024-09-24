@@ -1,0 +1,96 @@
+{
+  "timestamp": 1727127572562,
+  "context": {
+    "external_urls": {
+      "spotify": "https://open.spotify.com/collection/tracks"
+    },
+    "href": "https://api.spotify.com/v1/me/tracks",
+    "type": "collection",
+    "uri": "spotify:user:1260305620:collection"
+  },
+  "progress_ms": 1961,
+  "item": {
+    "album": {
+      "album_type": "album",
+      "artists": [
+        {
+          "external_urls": {
+            "spotify": "https://open.spotify.com/artist/4iJLPqClelZOBCBifm8Fzv"
+          },
+          "href": "https://api.spotify.com/v1/artists/4iJLPqClelZOBCBifm8Fzv",
+          "id": "4iJLPqClelZOBCBifm8Fzv",
+          "name": "Pierce The Veil",
+          "type": "artist",
+          "uri": "spotify:artist:4iJLPqClelZOBCBifm8Fzv"
+        }
+      ],
+      "available_markets": [],
+      "external_urls": {
+        "spotify": "https://open.spotify.com/album/1wV3Oun1eOsGZWihTuTApq"
+      },
+      "href": "https://api.spotify.com/v1/albums/1wV3Oun1eOsGZWihTuTApq",
+      "id": "1wV3Oun1eOsGZWihTuTApq",
+      "images": [
+        {
+          "height": 640,
+          "url": "https://i.scdn.co/image/ab67616d0000b2736455c0129c88097f8ae22baa",
+          "width": 640
+        },
+        {
+          "height": 300,
+          "url": "https://i.scdn.co/image/ab67616d00001e026455c0129c88097f8ae22baa",
+          "width": 300
+        },
+        {
+          "height": 64,
+          "url": "https://i.scdn.co/image/ab67616d000048516455c0129c88097f8ae22baa",
+          "width": 64
+        }
+      ],
+      "name": "Misadventures",
+      "release_date": "2016-05-13",
+      "release_date_precision": "day",
+      "total_tracks": 11,
+      "type": "album",
+      "uri": "spotify:album:1wV3Oun1eOsGZWihTuTApq"
+    },
+    "artists": [
+      {
+        "external_urls": {
+          "spotify": "https://open.spotify.com/artist/4iJLPqClelZOBCBifm8Fzv"
+        },
+        "href": "https://api.spotify.com/v1/artists/4iJLPqClelZOBCBifm8Fzv",
+        "id": "4iJLPqClelZOBCBifm8Fzv",
+        "name": "Pierce The Veil",
+        "type": "artist",
+        "uri": "spotify:artist:4iJLPqClelZOBCBifm8Fzv"
+      }
+    ],
+    "available_markets": [],
+    "disc_number": 1,
+    "duration_ms": 248853,
+    "explicit": false,
+    "external_ids": {
+      "isrc": "US5261521599"
+    },
+    "external_urls": {
+      "spotify": "https://open.spotify.com/track/1VY823dFzI9L8BEf2X7B5I"
+    },
+    "href": "https://api.spotify.com/v1/tracks/1VY823dFzI9L8BEf2X7B5I",
+    "id": "1VY823dFzI9L8BEf2X7B5I",
+    "is_local": false,
+    "name": "The Divine Zero",
+    "popularity": 0,
+    "preview_url": null,
+    "track_number": 3,
+    "type": "track",
+    "uri": "spotify:track:1VY823dFzI9L8BEf2X7B5I"
+  },
+  "currently_playing_type": "track",
+  "actions": {
+    "disallows": {
+      "resuming": true
+    }
+  },
+  "is_playing": true
+}
