@@ -340,10 +340,12 @@ impl SpotifyClient {
     }
 
     #[cfg(feature = "blocking")]
-    pub fn get_currently_playing_track(&self) -> Result<Option<CurrentlyPlayingTrack>> {
+    pub fn get_currently_playing_track(&mut self) -> Result<Option<CurrentlyPlayingTrack>> {
         if !self.creds_are_loaded() {
             bail!("Creds are misconfigured, cannot execute API");
         }
+        let _ = self.refresh_access_token()?;
+
         let access_token = self.access_token();
         let api_url = format!("{SPOTIFY_API_URL}{CUR_PLAYING_API_PATH}");
         let request = self.http_client.get(api_url).bearer_auth(access_token);
@@ -354,7 +356,12 @@ impl SpotifyClient {
             bail!("Problem calling Spotify API: {e}");
         }
         let payload = response?;
-        if StatusCode::NO_CONTENT == payload.status() {
+        let status = payload.status();
+        debug!("API Response status <{}>", status);
+        if !status.is_success() {
+            warn!("Spotify response status was not success <{}>", status);
+        }
+        if StatusCode::NO_CONTENT == status {
             // Nothing is playing right now
             return Ok(None);
         }
@@ -367,10 +374,12 @@ impl SpotifyClient {
     }
 
     #[cfg(not(feature = "blocking"))]
-    pub async fn get_currently_playing_track(&self) -> Result<Option<CurrentlyPlayingTrack>> {
+    pub async fn get_currently_playing_track(&mut self) -> Result<Option<CurrentlyPlayingTrack>> {
         if !self.creds_are_loaded() {
             bail!("Creds are misconfigured, cannot execute API");
         }
+        let _ = self.refresh_access_token().await?;
+
         let access_token = self.access_token();
         let api_url = format!("{SPOTIFY_API_URL}{CUR_PLAYING_API_PATH}");
         let request = self.http_client.get(api_url).bearer_auth(access_token);
@@ -381,7 +390,12 @@ impl SpotifyClient {
             bail!("Problem calling Spotify API: {e}");
         }
         let payload = response?;
-        if StatusCode::NO_CONTENT == payload.status() {
+        let status = payload.status();
+        debug!("API Response status <{}>", status);
+        if !status.is_success() {
+            warn!("Spotify response status was not success <{}>", status);
+        }
+        if StatusCode::NO_CONTENT == status {
             // Nothing is playing right now
             return Ok(None);
         }
